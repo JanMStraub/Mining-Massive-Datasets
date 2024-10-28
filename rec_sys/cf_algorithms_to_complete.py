@@ -1,10 +1,15 @@
 # Artur Andrzejak, October 2024
 # Algorithms for collaborative filtering
 
+import psutil
+import os
 import numpy as np
 import scipy.sparse as sp
+import shelve
+import tensorflow as tf
+import tensorflow_datasets as tfds
 from scipy.sparse.linalg import norm as sparse_norm
-from rec_sys.data_util import load_movielens_tf
+from rec_sys.data_util import load_movielens_tf, print_df_stats
 
 
 def complete_code(message):
@@ -148,55 +153,73 @@ def pearson(sparse_mat, vec):
 ### Exercise 3 ###
 
 
-def rate_all_items_sparse(orig_utility_matrix, user_index, neighborhood_size):
+def center_and_nan_to_zero_sparse(matrix, axis=0):
+
+    # Compute the mean along the specified axis, resulting in a 1D array
+    mean_values = np.array(matrix.mean(axis=axis)).flatten()
+
+    if axis == 0:
+        # Subtract column means: create a matrix with means broadcasted along columns
+        mean_matrix = sp.csr_matrix(
+            np.repeat(mean_values, matrix.shape[0]).reshape(matrix.shape[1], -1)
+        ).T
+        centered_matrix = matrix - mean_matrix
+    else:
+        # Subtract row means: create a matrix with means broadcasted along rows
+        mean_matrix = sp.csr_matrix(
+            np.repeat(mean_values, matrix.shape[1]).reshape(matrix.shape[0], -1)
+        )
+        centered_matrix = matrix - mean_matrix
+
+    # Replace NaNs with zero in sparse matrices (implicitly handled as zeros)
+    return centered_matrix
+
+
+def rate_all_items_sparse(orig_sparse_utility_matrix, user_index, neighborhood_size):
     print(
-        f"\n>>> CF computation for UM w/ shape: "
-        + f"{orig_utility_matrix.shape}, user_index: {user_index}, neighborhood_size: {neighborhood_size}\n"
+        f"\n>>> CF computation for sparse UM w/ shape: "
+        + f"{orig_sparse_utility_matrix.shape}, user_index: {user_index}, neighborhood_size: {neighborhood_size}\n"
     )
 
-    clean_utility_matrix = center_and_nan_to_zero(orig_utility_matrix)
-    """ Compute the rating of all items not yet rated by the user"""
-    user_col = clean_utility_matrix[:, user_index]
-    # Compute the cosine similarity between the user and all other users
-    similarities = fast_cosine_sim(clean_utility_matrix, user_col)
+    # Center the sparse matrix
+    clean_utility_matrix = center_and_nan_to_zero_sparse(orig_sparse_utility_matrix)
+    user_col = clean_utility_matrix[:, user_index].toarray().flatten()
+
+    # Calculate similarity between the user and all other users
+    similarities = pearson(clean_utility_matrix, user_col)
 
     def rate_one_item(item_index):
-        # If the user has already rated the item, return the rating
-        if not np.isnan(orig_utility_matrix[item_index, user_index]):
-            return orig_utility_matrix[item_index, user_index]
+        if not np.isnan(orig_sparse_utility_matrix[item_index, user_index]):
+            return orig_sparse_utility_matrix[item_index, user_index]
 
-        # Find the indices of users who rated the item
-        users_who_rated = np.where(
-            np.isnan(orig_utility_matrix[item_index, :]) == False
-        )[0]
-        # From those, get indices of users with the highest similarity (watch out: result indices are rel. to users_who_rated)
-        best_among_who_rated = np.argsort(similarities[users_who_rated])
-        # Select top neighborhood_size of them
-        best_among_who_rated = best_among_who_rated[-neighborhood_size:]
-        # Convert the indices back to the original utility matrix indices
-        best_among_who_rated = users_who_rated[best_among_who_rated]
-        # Retain only those indices where the similarity is not nan
+        users_who_rated = orig_sparse_utility_matrix[item_index, :].nonzero()[1]
+        sorted_similarities = np.argsort(similarities[users_who_rated])
+        best_among_who_rated = users_who_rated[sorted_similarities[-neighborhood_size:]]
+
+        # Remove any NaN similarities
         best_among_who_rated = best_among_who_rated[
-            np.isnan(similarities[best_among_who_rated]) == False
+            ~np.isnan(similarities[best_among_who_rated])
         ]
+
         if best_among_who_rated.size > 0:
             sim_vals = similarities[best_among_who_rated]
-            rating_neighbors = orig_utility_matrix[item_index, best_among_who_rated]
-
-            # Compute the rating of the item
+            rating_neighbors = (
+                orig_sparse_utility_matrix[item_index, best_among_who_rated]
+                .toarray()
+                .flatten()
+            )
             rating_of_item = np.dot(sim_vals, rating_neighbors) / np.sum(
                 np.abs(sim_vals)
             )
         else:
             rating_of_item = np.nan
+
         print(
             f"item_idx: {item_index}, neighbors: {best_among_who_rated}, rating: {rating_of_item}"
         )
         return rating_of_item
 
-    num_items = orig_utility_matrix.shape[0]
-
-    # Get all ratings
+    num_items = orig_sparse_utility_matrix.shape[0]
     ratings = list(map(rate_one_item, range(num_items)))
     return ratings
 
@@ -204,15 +227,97 @@ def rate_all_items_sparse(orig_utility_matrix, user_index, neighborhood_size):
 ### Exercise 4 ###
 
 
+def create_data_structures_with_shelve(
+    config, rated_by_path="rated_by.db", user_col_path="user_col.db"
+):
+
+    # Load the dataset using the provided config
+    ratings_tf, user_ids_voc, movie_ids_voc = load_movielens_tf(config)
+
+    # Open shelves for persistent storage
+    with shelve.open(rated_by_path, writeback=True) as rated_by, shelve.open(
+        user_col_path, writeback=True
+    ) as user_col:
+        for rating in ratings_tf:
+            user_id = int(user_ids_voc["user_id"].numpy())
+            movie_id = int(movie_ids_voc["movie_id"].numpy())
+            rating_value = float(rating["user_rating"].numpy())
+
+            # Update rated_by dictionary in the shelf
+            if movie_id not in rated_by:
+                rated_by[movie_id] = []
+            rated_by[movie_id].append((user_id, rating_value))
+
+            # Update user_col dictionary in the shelf
+            if user_id not in user_col:
+                user_col[user_id] = []
+            user_col[user_id].append((movie_id, rating_value))
+
+        # Convert user_col to sparse format and store as tuples
+        for user_id, movie_ratings in user_col.items():
+            # Create sparse vector
+            movie_ids, ratings = zip(*movie_ratings)
+            sparse_vec = sp.csr_matrix(
+                (ratings, (np.zeros(len(ratings)), movie_ids)),
+                shape=(1, len(movie_ids)),
+            )
+            # Store as serializable tuple
+            user_col[user_id] = (
+                sparse_vec.data,
+                sparse_vec.indices,
+                sparse_vec.indptr,
+                sparse_vec.shape,
+            )
+
+    print("Data structures rated_by and user_col created with Python shelves.")
+
+
+def load_user_sparse_vector(user_id, user_col_path="user_col.db"):
+
+    with shelve.open(user_col_path) as user_col:
+        if user_id in user_col:
+            data, indices, indptr, shape = user_col[user_id]
+            return sp.csr_matrix((data, indices, indptr), shape=shape)
+        else:
+            return None
+
+
+def load_movie_ratings(movie_id, rated_by_path="rated_by.db"):
+
+    with shelve.open(rated_by_path) as rated_by:
+        return rated_by.get(movie_id, [])
+
+
 ### Exercise 5 ###
 
 
-def estimate_ratings_for_pairs(user_item_pairs, utility_matrix, neighborhood_size):
-    results = []
-    for user_id, movie_id in user_item_pairs:
-        user_index, item_index = user_id - 1, movie_id - 1
-        predicted_rating = rate_all_items_sparse(
-            utility_matrix, user_index, neighborhood_size
-        )[item_index]
-        results.append((user_id, movie_id, predicted_rating))
-    return results
+def estimate_rating(user, item, utility_matrix, neighborhood_size=5):
+
+    # Center and normalize the utility matrix
+    mean_user_rating = np.nanmean(utility_matrix, axis=1).flatten()
+    utility_matrix_centered = utility_matrix - mean_user_rating[:, None]
+
+    # Compute similarity with other users or items (user-based in this case)
+    similarities = pearson(
+        utility_matrix_centered, utility_matrix[user, :].toarray().flatten()
+    )
+
+    # Find the neighborhood (top-N most similar users)
+    neighbor_indices = np.argsort(-similarities)[:neighborhood_size]
+    neighbor_ratings = utility_matrix[neighbor_indices, item].toarray().flatten()
+
+    # Calculate weighted average of neighbor ratings
+    weighted_sum = sum(
+        similarities[i] * neighbor_ratings[i]
+        for i in neighbor_indices
+        if not np.isnan(neighbor_ratings[i])
+    )
+    similarity_sum = sum(
+        similarities[i] for i in neighbor_indices if not np.isnan(neighbor_ratings[i])
+    )
+
+    # Predicted rating
+    predicted_rating = mean_user_rating[user] + (
+        weighted_sum / similarity_sum if similarity_sum != 0 else 0
+    )
+    return predicted_rating
