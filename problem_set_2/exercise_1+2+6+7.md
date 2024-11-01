@@ -49,3 +49,74 @@ Now they are more dissimilar especially AB.
 - BC = -0.28817938438423535
 
 I think my Pearson correlation values are wrong, as these shor that there is no strong linear relationship between any of the pairs.
+
+# Exercise 6
+
+## a)
+
+What data can you use to populate a utility matrix in the following cases?
+
+- Numerical ratings for teaching style, clarity, difficulty etc.
+- Qualitative rating by analyzing a written feedback and giving it a positive or negative rating based in the sentiment
+
+What relations other than like or a numerical rating can be exploited to express a positive or negative connection?
+
+- Students could recommend professors
+
+## b)
+
+What data can you use to populate a utility matrix in the following cases?
+
+- Numerical rating (0/1) if the user dislikes or likes the artwork
+- Number of views, comments and shares an artwork recieves
+
+What relations other than like or a numerical rating can be exploited to express a positive or negative connection?
+
+- If a user follows an artist or if he adds the artwork to his favorites
+
+## c)
+
+What data can you use to populate a utility matrix in the following cases?
+
+- How many profile visits, likes and messages a profile gets
+- How often a user is blocked
+
+What relations other than like or a numerical rating can be exploited to express a positive or negative connection?
+
+- The dream partner profile can be used to assess potential matches based on interests etc.
+- Mutual interaction
+
+What is special about this scenario?
+
+- Special is that each user is also an item and vise versa
+
+# Exercise 7
+
+## a)
+
+What would the lists of movies recommended by each system look like?
+
+- G: Highly popular movies
+- R: Mix of popular and niche movies based on user preferences
+- L: Mix of popular and niche movies based on similar users preferences
+
+Does any of the systems G, R and L introduce users to more exotic items from the long tail?
+
+- The L system indroduces users to more exotic items
+
+## b)
+
+What system would be most robust to such an attempt?
+
+- The most robust system would be the L one, as it relies on user behavior patterns.
+
+Which users recommendation lists would be affected most?
+
+- The user who prefers the mainstream films (G)
+
+## c)
+
+Can these types of users benet from either of the three systems?
+
+- gray sheep benefit from the R and L system
+- black sheep benefit from the R and L system too
